@@ -2,7 +2,7 @@
 extern "C"
 {
 #endif
-#include <ilclient.h>
+#include "ilclient.h"
 #ifdef __cplusplus
 }
 #endif
@@ -386,12 +386,13 @@ int jpeg_decode(OMX_JPEG_DECODER *deco, const std::vector<uint8_t> &src, LwImage
     const uint8_t *srcOffset = src.data();
     size_t pendingbytes = src.size();
     bool portSettingsChanged = false;
+    OMX_BUFFERHEADERTYPE *buffer;
 
     ilclient_state_transition(components, OMX_StateExecuting);
 
     while (pendingbytes > 0)
     {
-        OMX_BUFFERHEADERTYPE *buffer = ilclient_get_input_buffer(deco->comp_deco, deco->in_deco, 1);
+        buffer = ilclient_get_input_buffer(deco->comp_deco, deco->in_deco, 1);
 
         if (pendingbytes > buffer->nAllocLen)
             buffer->nFilledLen = buffer->nAllocLen;
@@ -404,6 +405,7 @@ int jpeg_decode(OMX_JPEG_DECODER *deco, const std::vector<uint8_t> &src, LwImage
         buffer->nOffset = 0;
         buffer->nFlags = (pendingbytes > 0) ? 0 : OMX_BUFFERFLAG_EOS;
 
+        fprintf(stderr, "OMX_EmptyThisBuffer pBuffer %p, len %u", buffer, buffer->nFilledLen);
         if ((omxerr = OMX_EmptyThisBuffer(deco->h_deco, buffer)) != OMX_ErrorNone)
         {
             fprintf(stderr, "OMX_EmptyThisBuffer(deco, in): %X\n", omxerr);
@@ -412,62 +414,61 @@ int jpeg_decode(OMX_JPEG_DECODER *deco, const std::vector<uint8_t> &src, LwImage
 
     if ((omxerr = ilclient_wait_for_event(deco->comp_deco, OMX_EventPortSettingsChanged, deco->out_deco, 0, 0, 1, ILCLIENT_EVENT_ERROR | ILCLIENT_CONFIG_CHANGED | ILCLIENT_PARAMETER_CHANGED | ILCLIENT_BUFFER_FLAG_EOS, 50)) != -2)
     {
+        OMX_PARAM_PORTDEFINITIONTYPE portdef;
+        portdef.nSize = sizeof(OMX_PARAM_PORTDEFINITIONTYPE);
+        portdef.nVersion.nVersion = OMX_VERSION;
+        portdef.nPortIndex = deco->out_resz;
+
         //bool port_settings_triggered = (omxerr == 0);
         if (omxerr == 0)
             apply_port_settings(deco);
         //else
         //    fprintf(stderr, "ilclient_wait_for_event(deco, OMX_eventPortSettingsChanged, out): %d\n", omxerr);
 
-        if ((omxerr = ilclient_wait_for_event(deco->comp_deco, OMX_EventBufferFlag, deco->out_deco, 0, OMX_BUFFERFLAG_EOS, 0, ILCLIENT_EVENT_ERROR | ILCLIENT_CONFIG_CHANGED | ILCLIENT_BUFFER_FLAG_EOS, 50)) == 0)
+        while(1)
         {
-            OMX_BUFFERHEADERTYPE *buffer = ilclient_get_output_buffer(deco->comp_resz, deco->out_resz, 1);
+            //Add a semaphore to signal something has happened, triggered from the callbacks.
 
-            if ((omxerr = OMX_FillThisBuffer(deco->h_resz, buffer)) != OMX_ErrorNone)
+            buffer = ilclient_get_output_buffer(deco->comp_resz, deco->out_resz, 0);
+            if (buffer)
             {
-                fprintf(stderr, "OMX_FillThisBuffer(resize, out): %X\n", omxerr);
+                OMX_U32 nFlags = buffer->nFlags;
+
+                fprintf(stderr, "Buffer %p returned, nFilledLen %u, nFlags %u\n", buffer, buffer->nFilledLen, buffer->nFlags);
+
+                if (buffer->nFilledLen)
+                {
+                    if ((omxerr = OMX_GetParameter(deco->h_resz, OMX_IndexParamPortDefinition, &portdef)) == OMX_ErrorNone)
+                    {
+                        fprintf(stderr, "Process new buffer %p, nFilledLen %u, nFlags %u\n", buffer, buffer->nFilledLen, buffer->nFlags);
+                        dst.width = portdef.format.image.nFrameWidth;
+                        dst.height = portdef.format.image.nFrameHeight;
+                        dst.stride = portdef.format.image.nStride;
+                        dst.format = MAKE_PIXEL_FORMAT(4, 8, 0, 0);
+                        dst.pixels = std::vector<uint8_t>(buffer->pBuffer, buffer->pBuffer + dst.stride * dst.height);
+                        result = 0;
+                    }
+                    else
+                    {
+                        fprintf(stderr, "OMX_GetParameter(resize, OMX_IndexParamPortDefinition, out): %X\n", omxerr);
+                    }
+                }
+
+                if ((omxerr = OMX_FillThisBuffer(deco->h_resz, buffer)) != OMX_ErrorNone)
+                {
+                    fprintf(stderr, "OMX_FillThisBuffer(resize, out): %X\n", omxerr);
+                }
+
+                if (nFlags & OMX_BUFFERFLAG_EOS)
+                    break;
+            }
+            if (ilclient_remove_event(deco->comp_deco, OMX_EventError, 0, 1, 0, 1) == 0)
+            {
+                fprintf(stderr, "Decode error\n");
+                break;
             }
 
-            OMX_PARAM_PORTDEFINITIONTYPE portdef;
-            portdef.nSize = sizeof(OMX_PARAM_PORTDEFINITIONTYPE);
-            portdef.nVersion.nVersion = OMX_VERSION;
-            portdef.nPortIndex = deco->out_resz;
-
-            if (ilclient_remove_event(deco->comp_deco, OMX_EventError, 0, 1, 0, 1) < 0 && (omxerr = ilclient_wait_for_event(deco->comp_resz, OMX_EventBufferFlag, deco->out_resz, 0, OMX_BUFFERFLAG_EOS, 0, ILCLIENT_EVENT_ERROR | ILCLIENT_CONFIG_CHANGED | ILCLIENT_BUFFER_FLAG_EOS, 500)) < 0)
-            {
-                fprintf(stderr, "ilclient_wait_for_event(resize, OMX_EventBufferFlag, out, EOS): %d\n", omxerr);
-
-                if ((omxerr = ilclient_remove_event(deco->comp_deco, OMX_EventError, 0, 1, 0, 1)) < 0)
-                {
-                    fprintf(stderr, "ilclient_remove_event(deco, OMX_EventError, *): %d\n", omxerr);
-                }
-                else
-                {
-                    fprintf(stderr, "!!! ERROR REMOVED: there wasn't an error? %d\n", omxerr);
-                }
-            }
-            else
-            {
-                if ((omxerr = OMX_GetParameter(deco->h_resz, OMX_IndexParamPortDefinition, &portdef)) == OMX_ErrorNone)
-                {
-                    dst.width = portdef.format.image.nFrameWidth;
-                    dst.height = portdef.format.image.nFrameHeight;
-                    dst.stride = portdef.format.image.nStride;
-                    dst.format = MAKE_PIXEL_FORMAT(4, 8, 0, 0);
-                    dst.pixels = std::vector<uint8_t>(buffer->pBuffer, buffer->pBuffer + dst.stride * dst.height);
-                    result = 0;
-                }
-                else
-                {
-                    fprintf(stderr, "OMX_GetParameter(resize, OMX_IndexParamPortDefinition, out): %X\n", omxerr);
-                }
-            }
-        }
-        else if (omxerr == -2)
-        {
-            if ((omxerr = ilclient_remove_event(deco->comp_deco, OMX_EventError, 0, 1, 0, 1)) < 0)
-            {
-                fprintf(stderr, "ilclient_remove_event(deco, OMX_EventError, *): %d\n", omxerr);
-            }
+            vcos_sleep(10);
         }
 
     }
@@ -535,6 +536,7 @@ int main()
 
         if (action == files.size())
         {
+            fprintf(stderr, "Close/reopen jpeg decoder\n");
             destroy_jpeg_decoder(&deco);
             init_jpeg_decoder(&deco);
         }
@@ -543,10 +545,16 @@ int main()
             std::vector<uint8_t> &v = files[action].second;
             LwImage img;
 
+            fprintf(stderr, "Decode entry %d\n", action);
             if (jpeg_decode(&deco, v, img) == 0)
+            {
                 std::cout << "image decoded: " << files[action].first << "(" << img.width << "x" << img.height << ")" << std::endl;
+            }
             else
+            {
                 std::cout << "!!!error decoding: " << files[action].first << std::endl;
+            }
+            fprintf(stderr, "Done\n");
         }
     }
 
