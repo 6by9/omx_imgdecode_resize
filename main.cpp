@@ -13,6 +13,7 @@ extern "C"
 #include <fstream>
 #include <unistd.h>
 #include <dirent.h>
+#include "interface/vcos/vcos_event_flags.h"
 
 #define MAKE_PIXEL_FORMAT(channels, depth, datatype, order) ((channels) | ((depth) << 4) | ((datatype) << 14) | ((order) << 24))
 
@@ -35,6 +36,7 @@ struct OMX_JPEG_DECODER
     COMPONENT_T *comp_resz;
     OMX_HANDLETYPE h_deco;
     OMX_HANDLETYPE h_resz;
+    VCOS_EVENT_FLAGS_T event;
 
     int in_deco;
     int out_deco;
@@ -45,7 +47,9 @@ struct OMX_JPEG_DECODER
 
 void errorcb(void *userdata, COMPONENT_T *comp, OMX_U32 data)
 {
+    struct OMX_JPEG_DECODER *deco = (struct OMX_JPEG_DECODER*)userdata;
     fprintf(stderr, "ERROR in component %p: %X\n", comp, data);
+    vcos_event_flags_set(&deco->event, 1, VCOS_OR);
 }
 
 void configchangecb(void *userdata, COMPONENT_T *comp, OMX_U32 data)
@@ -60,12 +64,16 @@ void emptybuffercb(void *userdata, COMPONENT_T *comp)
 
 void fillbuffercb(void *userdata, COMPONENT_T *comp)
 {
+    struct OMX_JPEG_DECODER *deco = (struct OMX_JPEG_DECODER*)userdata;
     fprintf(stderr, "BUFFER FILLED in component %p\n", comp);
+    vcos_event_flags_set(&deco->event, 1, VCOS_OR);
 }
 
 void eoscb(void *userdata, COMPONENT_T *comp, OMX_U32 data)
 {
+    struct OMX_JPEG_DECODER *deco = (struct OMX_JPEG_DECODER*)userdata;
     fprintf(stderr, "EOS in component %p: %d\n", comp, data);
+    vcos_event_flags_set(&deco->event, 1, VCOS_OR);
 }
 
 void psettingscb(void *userdata, COMPONENT_T *comp, OMX_U32 data)
@@ -77,6 +85,8 @@ void init_jpeg_decoder(OMX_JPEG_DECODER *deco)
 {
     int omxerr;
     deco->ilclient = ilclient_init();
+
+    vcos_event_flags_create(&deco->event, "event");
 
     ilclient_set_error_callback(deco->ilclient, errorcb, deco);
     ilclient_set_configchanged_callback(deco->ilclient, configchangecb, deco);
@@ -259,6 +269,7 @@ void destroy_jpeg_decoder(OMX_JPEG_DECODER *deco)
 
     ilclient_state_transition(components, OMX_StateLoaded);
 
+    vcos_event_flags_delete(&deco->event);
     ilclient_cleanup_components(components);
     ilclient_destroy(deco->ilclient);
 }
@@ -339,6 +350,7 @@ void apply_port_settings(OMX_JPEG_DECODER *deco)
     portdef.format.image.nStride = 0;
     portdef.format.image.nSliceHeight = 0;
     portdef.format.image.bFlagErrorConcealment = OMX_FALSE;
+    portdef.nBufferCountActual = 2;
 
     if ((omxerr = OMX_SetParameter(deco->h_resz, OMX_IndexParamPortDefinition, &portdef)) != OMX_ErrorNone)
     {
@@ -428,7 +440,14 @@ int jpeg_decode(OMX_JPEG_DECODER *deco, const std::vector<uint8_t> &src, LwImage
         int complete = 0;
         while(!complete)
         {
-            //Add a semaphore to signal something has happened, triggered from the callbacks.
+            VCOS_UNSIGNED set;
+            VCOS_STATUS_T status = vcos_event_flags_get(&deco->event, 1, VCOS_OR_CONSUME, 1000, &set);
+
+            if (status != VCOS_SUCCESS)
+            {
+                fprintf(stderr, "Timed out waiting for something to happen\n");
+                break;
+            }
 
             while((buffer = ilclient_get_output_buffer(deco->comp_resz, deco->out_resz, 0)) != NULL)
             {
@@ -453,10 +472,6 @@ int jpeg_decode(OMX_JPEG_DECODER *deco, const std::vector<uint8_t> &src, LwImage
                         fprintf(stderr, "OMX_GetParameter(resize, OMX_IndexParamPortDefinition, out): %X\n", omxerr);
                     }
                 }
-                else
-                {
-                    fprintf(stderr, "Empty buffer nFlags\n", buffer->nFlags);
-                }
 
                 if ((omxerr = OMX_FillThisBuffer(deco->h_resz, buffer)) != OMX_ErrorNone)
                 {
@@ -475,8 +490,6 @@ int jpeg_decode(OMX_JPEG_DECODER *deco, const std::vector<uint8_t> &src, LwImage
                 fprintf(stderr, "Decode error\n");
                 break;
             }
-
-            vcos_sleep(10);
         }
 
     }
