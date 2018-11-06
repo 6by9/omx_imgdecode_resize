@@ -425,12 +425,12 @@ int jpeg_decode(OMX_JPEG_DECODER *deco, const std::vector<uint8_t> &src, LwImage
         //else
         //    fprintf(stderr, "ilclient_wait_for_event(deco, OMX_eventPortSettingsChanged, out): %d\n", omxerr);
 
-        while(1)
+        int complete = 0;
+        while(!complete)
         {
             //Add a semaphore to signal something has happened, triggered from the callbacks.
 
-            buffer = ilclient_get_output_buffer(deco->comp_resz, deco->out_resz, 0);
-            if (buffer)
+            while((buffer = ilclient_get_output_buffer(deco->comp_resz, deco->out_resz, 0)) != NULL)
             {
                 OMX_U32 nFlags = buffer->nFlags;
 
@@ -453,6 +453,10 @@ int jpeg_decode(OMX_JPEG_DECODER *deco, const std::vector<uint8_t> &src, LwImage
                         fprintf(stderr, "OMX_GetParameter(resize, OMX_IndexParamPortDefinition, out): %X\n", omxerr);
                     }
                 }
+                else
+                {
+                    fprintf(stderr, "Empty buffer nFlags\n", buffer->nFlags);
+                }
 
                 if ((omxerr = OMX_FillThisBuffer(deco->h_resz, buffer)) != OMX_ErrorNone)
                 {
@@ -460,8 +464,12 @@ int jpeg_decode(OMX_JPEG_DECODER *deco, const std::vector<uint8_t> &src, LwImage
                 }
 
                 if (nFlags & OMX_BUFFERFLAG_EOS)
+                {
+                    complete++;
                     break;
+                }
             }
+
             if (ilclient_remove_event(deco->comp_deco, OMX_EventError, 0, 1, 0, 1) == 0)
             {
                 fprintf(stderr, "Decode error\n");
