@@ -37,6 +37,7 @@ struct OMX_JPEG_DECODER
     OMX_HANDLETYPE h_deco;
     OMX_HANDLETYPE h_resz;
     VCOS_EVENT_FLAGS_T event;
+    TUNNEL_T tunnels[2];
 
     int in_deco;
     int out_deco;
@@ -158,7 +159,7 @@ void init_jpeg_decoder(OMX_JPEG_DECODER *deco)
         fprintf(stderr, "ilclient_enable_port_buffers(deco, in): %d\n", omxerr);
     }
 
-    if ((omxerr = OMX_SetupTunnel(deco->h_deco, deco->out_deco, deco->h_resz, deco->in_resz)) != OMX_ErrorNone)
+/*    if ((omxerr = OMX_SetupTunnel(deco->h_deco, deco->out_deco, deco->h_resz, deco->in_resz)) != OMX_ErrorNone)
     {
         fprintf(stderr, "OMX_SetupTunnel(deco, out, resize, in): %d\n", omxerr);
     }
@@ -186,6 +187,7 @@ void init_jpeg_decoder(OMX_JPEG_DECODER *deco)
     {
         fprintf(stderr, "ilclient_wait_for_command_complete(resz, OMX_CommandPortEnable, in): %d\n", omxerr);
     }
+*/
 }
 
 void destroy_jpeg_decoder(OMX_JPEG_DECODER *deco)
@@ -199,16 +201,6 @@ void destroy_jpeg_decoder(OMX_JPEG_DECODER *deco)
         fprintf(stderr, "OMX_SendCommand(deco, OMX_CommandFlush, in): %X\n", omxerr);
     }
 
-    if ((omxerr = OMX_SendCommand(deco->h_deco, OMX_CommandFlush, deco->out_deco, NULL)) != OMX_ErrorNone)
-    {
-        fprintf(stderr, "OMX_SendCommand(deco, OMX_CommandFlush, out): %X\n", omxerr);
-    }
-
-    if ((omxerr = OMX_SendCommand(deco->h_resz, OMX_CommandFlush, deco->in_resz, NULL)) != OMX_ErrorNone)
-    {
-        fprintf(stderr, "OMX_SendCommand(resize, OMX_CommandFlush, in): %X\n", omxerr);
-    }
-
     if ((omxerr = OMX_SendCommand(deco->h_resz, OMX_CommandFlush, deco->out_resz, NULL)) != OMX_ErrorNone)
     {
         fprintf(stderr, "OMX_SendCommand(resize, OMX_CommandFlush, out): %X\n", omxerr);
@@ -219,25 +211,17 @@ void destroy_jpeg_decoder(OMX_JPEG_DECODER *deco)
         fprintf(stderr, "ilclient_wait_for_command_complete(deco, OMX_CommandFlush, in): %d\n", omxerr);
     }
 
-    if ((omxerr = ilclient_wait_for_event(deco->comp_deco, OMX_EventCmdComplete, OMX_CommandFlush, 0, deco->out_deco, 0, ILCLIENT_EVENT_ERROR, timeout)) != 0)
-    {
-        fprintf(stderr, "ilclient_wait_for_command_complete(deco, OMX_CommandFlush, out): %d\n", omxerr);
-    }
-
-    if ((omxerr = ilclient_wait_for_event(deco->comp_resz, OMX_EventCmdComplete, OMX_CommandFlush, 0, deco->in_resz, 0, ILCLIENT_EVENT_ERROR, timeout)) != 0)
-    {
-        fprintf(stderr, "ilclient_wait_for_command_complete(resize, OMX_CommandFlush, in): %d\n", omxerr);
-    }
-
     if ((omxerr = ilclient_wait_for_event(deco->comp_resz, OMX_EventCmdComplete, OMX_CommandFlush, 0, deco->out_resz, 0, ILCLIENT_EVENT_ERROR, timeout)) != 0)
     {
         fprintf(stderr, "ilclient_wait_for_command_complete(resize, OMX_CommandFlush, out): %d\n", omxerr);
     }
 
+    ilclient_flush_tunnels(deco->tunnels, 0);
+    
     ilclient_disable_port_buffers(deco->comp_deco, deco->in_deco, NULL, NULL, NULL);
     ilclient_disable_port_buffers(deco->comp_resz, deco->out_resz, NULL, NULL, NULL);
 
-    if ((omxerr = OMX_SendCommand(deco->h_deco, OMX_CommandPortDisable, deco->out_deco, NULL)) != OMX_ErrorNone)
+/*    if ((omxerr = OMX_SendCommand(deco->h_deco, OMX_CommandPortDisable, deco->out_deco, NULL)) != OMX_ErrorNone)
     {
         fprintf(stderr, "OMX_SendCommand(deco, OMX_CommandPortDisable, out): %X\n", omxerr);
     }
@@ -266,8 +250,19 @@ void destroy_jpeg_decoder(OMX_JPEG_DECODER *deco)
     {
         fprintf(stderr, "OMX_SetupTunnel(resize, in, NULL, 0): %X\n", omxerr);
     }
+*/
+   ilclient_disable_tunnel(deco->tunnels);
 
-    ilclient_state_transition(components, OMX_StateLoaded);
+   // transition to idle
+   ilclient_state_transition(components, OMX_StateIdle);
+
+   // transition to loaded
+   ilclient_state_transition(components, OMX_StateLoaded);
+
+   // tear down the tunnels
+   ilclient_teardown_tunnels(deco->tunnels);
+
+//    ilclient_state_transition(components, OMX_StateLoaded);
 
     vcos_event_flags_delete(&deco->event);
     ilclient_cleanup_components(components);
@@ -287,7 +282,7 @@ void apply_port_settings(OMX_JPEG_DECODER *deco)
     portdef.nPortIndex = deco->out_deco;
 
 
-    if ((omxerr = OMX_SendCommand(deco->h_deco, OMX_CommandPortDisable, deco->out_deco, NULL)) != OMX_ErrorNone)
+/*    if ((omxerr = OMX_SendCommand(deco->h_deco, OMX_CommandPortDisable, deco->out_deco, NULL)) != OMX_ErrorNone)
     {
         fprintf(stderr, "OMX_SendCommand(deco, OMX_CommandPortDisable, out): %d\n", omxerr);
     }
@@ -306,7 +301,7 @@ void apply_port_settings(OMX_JPEG_DECODER *deco)
     {
         fprintf(stderr, "ilclient_wait_for_command_complete(resz, OMX_CommandPortDisable, in): %d\n", omxerr);
     }
-
+*/
     if ((omxerr = OMX_GetParameter(deco->h_deco, OMX_IndexParamPortDefinition, &portdef)) != OMX_ErrorNone)
     {
         fprintf(stderr, "OMX_GetParameter(deco, OMX_IndexParamPortDefinition, out): %X\n", omxerr);
@@ -319,7 +314,7 @@ void apply_port_settings(OMX_JPEG_DECODER *deco)
 
     portdef.nPortIndex = deco->in_resz;
 
-    if ((omxerr = OMX_SetParameter(deco->h_resz, OMX_IndexParamPortDefinition, &portdef)) != OMX_ErrorNone)
+/*    if ((omxerr = OMX_SetParameter(deco->h_resz, OMX_IndexParamPortDefinition, &portdef)) != OMX_ErrorNone)
     {
         fprintf(stderr, "OMX_SetParameter(resz, OMX_IndexParamPortDefinition, in): %X\n", omxerr);
     }
@@ -333,8 +328,9 @@ void apply_port_settings(OMX_JPEG_DECODER *deco)
     {
         fprintf(stderr, "ilclient_change_component_state(resize, Idle): %d\n", omxerr);
     }
+*/
 
-    ilclient_disable_port_buffers(deco->comp_resz, deco->out_resz, NULL, NULL, NULL);
+//    ilclient_disable_port_buffers(deco->comp_resz, deco->out_resz, NULL, NULL, NULL);
 
     portdef.nPortIndex = deco->out_resz;
 
@@ -357,7 +353,7 @@ void apply_port_settings(OMX_JPEG_DECODER *deco)
         fprintf(stderr, "OMX_SetParameter(resz, OMX_IndexParamPortDefinition, in): %X\n", omxerr);
     }
 
-    if ((omxerr = OMX_SendCommand(deco->h_deco, OMX_CommandPortEnable, deco->out_deco, NULL)) != OMX_ErrorNone)
+/*    if ((omxerr = OMX_SendCommand(deco->h_deco, OMX_CommandPortEnable, deco->out_deco, NULL)) != OMX_ErrorNone)
     {
         fprintf(stderr, "OMX_SendCommand(deco, OMX_CommandPortEnable, out): %d\n", omxerr);
     }
@@ -376,15 +372,23 @@ void apply_port_settings(OMX_JPEG_DECODER *deco)
     {
         fprintf(stderr, "ilclient_wait_for_command_complete(resz, OMX_CommandPortEnable, in): %d\n", omxerr);
     }
+*/
+   set_tunnel(deco->tunnels, deco->comp_deco, deco->out_deco, deco->comp_resz, deco->in_resz);
+   set_tunnel(deco->tunnels+1, NULL, 0, NULL, 0);
+   if(ilclient_setup_tunnel(deco->tunnels, 0, 0) != 0)
+   {
+      fprintf(stderr, "ilclient_setup_tunnel failed\n");
+   }
 
     ilclient_enable_port_buffers(deco->comp_resz, deco->out_resz, NULL, NULL, NULL);
 
-    if ((omxerr = ilclient_wait_for_event(deco->comp_resz, OMX_EventPortSettingsChanged, deco->out_resz, 0, 0, 1, ILCLIENT_EVENT_ERROR, 0)) < 0)
+/*    if ((omxerr = ilclient_wait_for_event(deco->comp_resz, OMX_EventPortSettingsChanged, deco->out_resz, 0, 0, 1, ILCLIENT_EVENT_ERROR, 0)) < 0)
     {
         fprintf(stderr, "ilclient_wait_for_event(deco, OMX_eventPortSettingsChanged, out): %d\n", omxerr);
     }
-
-    if (last_state != OMX_StateIdle && (omxerr = ilclient_change_component_state(deco->comp_resz, OMX_StateExecuting)) < 0)
+*/
+    if (/*last_state != OMX_StateIdle &&*/
+        (omxerr = ilclient_change_component_state(deco->comp_resz, OMX_StateExecuting)) < 0)
     {
         fprintf(stderr, "ilclient_change_component_state(resize, Exec): %d\n", omxerr);
     }
@@ -392,7 +396,7 @@ void apply_port_settings(OMX_JPEG_DECODER *deco)
 
 int jpeg_decode(OMX_JPEG_DECODER *deco, const std::vector<uint8_t> &src, LwImage &dst)
 {
-    COMPONENT_T *components[] = { deco->comp_deco, deco->comp_resz, NULL };
+    COMPONENT_T *components[] = { deco->comp_deco, NULL, NULL };
     int omxerr;
     int result = -1;
     const uint8_t *srcOffset = src.data();
@@ -423,6 +427,7 @@ int jpeg_decode(OMX_JPEG_DECODER *deco, const std::vector<uint8_t> &src, LwImage
             fprintf(stderr, "OMX_EmptyThisBuffer(deco, in): %X\n", omxerr);
         }
     }
+    components[1] = deco->comp_resz;
 
     if ((omxerr = ilclient_wait_for_event(deco->comp_deco, OMX_EventPortSettingsChanged, deco->out_deco, 0, 0, 1, ILCLIENT_EVENT_ERROR | ILCLIENT_CONFIG_CHANGED | ILCLIENT_PARAMETER_CHANGED | ILCLIENT_BUFFER_FLAG_EOS, 50)) != -2)
     {
@@ -432,7 +437,7 @@ int jpeg_decode(OMX_JPEG_DECODER *deco, const std::vector<uint8_t> &src, LwImage
         portdef.nPortIndex = deco->out_resz;
 
         //bool port_settings_triggered = (omxerr == 0);
-        if (omxerr == 0)
+        //if (omxerr == 0)
             apply_port_settings(deco);
         //else
         //    fprintf(stderr, "ilclient_wait_for_event(deco, OMX_eventPortSettingsChanged, out): %d\n", omxerr);
